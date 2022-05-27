@@ -34,7 +34,7 @@ class Preprocess_Cifar100:
         if not os.path.exists(self.csv_write_dir):
             os.makedirs(self.csv_write_dir)
 
-        self.coarse_label_names, self.fine_label_names = read_meta(meta_filename=self.meta_filename)
+        self.coarse_label_names, self.fine_label_names = read_meta(self.meta_filename)
 
 
 

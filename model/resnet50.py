@@ -3,86 +3,45 @@
 
 import torch
 import torch.nn as nn
-from .cbam import CBAM
 
-class BottleNeck(nn.Module):
-    '''Bottleneck modules
+
+class TransformerNN(nn.Module):
+    '''classification architecture with transformer blocks.
     '''
 
-    def __init__(self, in_channels, out_channels, expansion=4, stride=1, use_cbam=True):
-        '''Param init.
-        '''
-        super(BottleNeck, self).__init__()
-
-        self.use_cbam = use_cbam
-        #only the first conv will be affected by the given stride parameter. The rest have default stride value (which is 1).
-        self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=1, bias=False, stride=stride)
-        self.bn1 = nn.BatchNorm2d(num_features=out_channels)
-        self.conv2 = nn.Conv2d(in_channels=out_channels, out_channels=out_channels, kernel_size=3, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(num_features=out_channels)
-        self.conv3 = nn.Conv2d(in_channels=out_channels, out_channels=out_channels*expansion, kernel_size=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(num_features=out_channels*expansion)
-        self.relu = nn.ReLU(inplace=True)
-
-        #since the input has to be same size with the output during the identity mapping, whenever the stride or the number of output channels are
-        #more than 1 and expansion*out_channels respectively, the input, x, has to be downsampled to the same level as well.
-        self.identity_connection = nn.Sequential()
-        if stride != 1 or in_channels != expansion*out_channels:
-            self.identity_connection = nn.Sequential(
-                nn.Conv2d(in_channels=in_channels, out_channels=expansion*out_channels, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(num_features=out_channels*expansion)
-            )
-
-        if self.use_cbam:
-            self.cbam = CBAM(channel_in=out_channels*expansion)
-
-
-    def forward(self, x):
-        '''Forward Propagation.
-        '''
-
-        out = self.relu(self.bn1(self.conv1(x)))
-        out = self.relu(self.bn2(self.conv2(out)))
-        out = self.bn3(self.conv3(out))
-
-        if self.use_cbam:
-            out = self.cbam(out)
-
-        out += self.identity_connection(x) #identity connection/skip connection
-        out = self.relu(out)
-
-        return out
-
-
-class ResNet50(nn.Module):
-    '''ResNet-50 Architecture.
-    '''
-
-    def __init__(self, use_cbam=True, image_depth=3, num_classes=[20,100]):
+    def __init__(self, use_rnn=False, rnn_type='lstm', rnn_init_states='zeros' ,num_classes=[4, 9, 16]):
         '''Params init and build arch.
         '''
-        super(ResNet50, self).__init__()
+        super(TransformerNN, self).__init__()
 
-        self.in_channels = 64
-        self.expansion = 4
-        self.num_blocks = [3, 4, 6, 3]
+        self.use_rnn = use_rnn
+        self.rnn_type = rnn_type
+        self.rnn_init_states = rnn_init_states
 
-        self.conv_block1 = nn.Sequential(nn.Conv2d(kernel_size=3, stride=1, in_channels=image_depth, out_channels=self.in_channels, padding=1, bias=False),
-                                            nn.BatchNorm2d(self.in_channels),
-                                            nn.ReLU(inplace=True))
+        # define transformer blocks here
+        self.transformer_embed_size = 256
 
-        self.layer1 = self.make_layer(out_channels=64, num_blocks=self.num_blocks[0], stride=1, use_cbam=use_cbam)
-        self.layer2 = self.make_layer(out_channels=128, num_blocks=self.num_blocks[1], stride=2, use_cbam=use_cbam)
-        self.layer3 = self.make_layer(out_channels=256, num_blocks=self.num_blocks[2], stride=1, use_cbam=use_cbam)
-        self.layer4 = self.make_layer(out_channels=512, num_blocks=self.num_blocks[3], stride=2, use_cbam=use_cbam)
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        # use RNN layer if transformer word embeddings are being used
+        self.recurrent = None
+        if use_rnn:
+            if rnn_type == 'lstm':
+                self.recurrent = nn.LSTM(input_size=self.transformer_embed_size,
+                                         hidden_size=self.transformer_embed_size,
+                                         batch_first=True)
+            elif rnn_type == 'gru':
+                self.recurrent = nn.GRU(input_size=self.transformer_embed_size,
+                                         hidden_size=self.transformer_embed_size,
+                                         batch_first=True)
+            else:
+                raise NotImplementedError('rnn type not found!')
 
-        self.linear_lvl1 = nn.Linear(512*self.expansion, num_classes[0])
-        self.linear_lvl2 = nn.Linear(512*self.expansion, num_classes[1])
+        self.linear_lvl1 = nn.Linear(self.transformer_embed_size, num_classes[0])
+        self.linear_lvl2 = nn.Linear(self.transformer_embed_size, num_classes[1])
+        self.linear_lvl3 = nn.Linear(self.transformer_embed_size, num_classes[2])
 
         self.softmax_reg1 = nn.Linear(num_classes[0], num_classes[0])
         self.softmax_reg2 = nn.Linear(num_classes[0]+num_classes[1], num_classes[1])
-
+        self.softmax_reg3 = nn.Linear(num_classes[1]+num_classes[2], num_classes[2])
 
 
     def make_layer(self, out_channels, num_blocks, stride, use_cbam):
@@ -95,22 +54,51 @@ class ResNet50(nn.Module):
             self.in_channels = out_channels * self.expansion
         return nn.Sequential(*layers)
 
+    def _forward_rnn(self, dummy_x):
+        inp = dummy_x[:, 1:, :]
+        if self.rnn_init_states == 'zeros':
+            if self.rnn_type == 'lstm':
+                output, hn, cn = self.recurrent(inp)
+            elif self.rnn_type == 'gru':
+                output, hn = self.recurrent(inp)
+            else:
+                raise NotImplementedError()
+        elif self.rnn_init_states == 'transformer_hxs':
+            h0 = c0 = dummy_x[:, 1, :].unsqueeze(0)
+            if self.rnn_type == 'lstm':
+                output, hn, cn = self.recurrent(inp, (h0, c0))
+            elif self.rnn_type == 'gru':
+                output, hn = self.recurrent(inp, h0)
+            else:
+                raise NotImplementedError()
+        else:
+            raise NotImplementedError('Error!')
+        return output, hn
 
     def forward(self, x):
         '''Forward propagation of ResNet-50.
         '''
 
-        x = self.conv_block1(x)
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x_conv = self.layer4(x)
-        x = self.avgpool(x_conv)
-        x = nn.Flatten()(x) #flatten the feature maps.
+        # Forward pass for transformer block
+        with torch.no_grad():
+            dummy_x = torch.randn((8, 101, 256))
+
+        # use RNN layer if transformer word embeddings are being used
+        if self.use_rnn:
+            output, hn = self._forward_rnn(dummy_x)
+            x = hn.squeeze()
+        else:
+            x = dummy_x[:, 0, :]
+
+        import pdb
+        pdb.set_trace()
+        #x = self.avgpool(x_conv)
+        #x = nn.Flatten()(x) #flatten the feature maps.
+        #import pdb
+        #pdb.set_trace()
 
         level_1 = self.softmax_reg1(self.linear_lvl1(x))
         level_2 = self.softmax_reg2(torch.cat((level_1, self.linear_lvl2(x)), dim=1))
+        level_3 = self.softmax_reg3(torch.cat((level_2, self.linear_lvl3(x)), dim=1))
 
-
-
-        return level_1, level_2
+        return level_1, level_2, level_3

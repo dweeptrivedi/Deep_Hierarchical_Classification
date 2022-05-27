@@ -3,6 +3,9 @@
 
 import argparse
 
+def str2bool(v):
+    return v.lower() == 'true'
+
 parser = argparse.ArgumentParser()
 
 parser.add_argument('--train_csv', type=str, help='Specify the path to the train csv file.', default='./dataset/train.csv')
@@ -20,5 +23,10 @@ parser.add_argument('--no_shuffle', help='Use this flag to disable shuffling dur
 parser.add_argument('--img_size', type=int, help='Specify the size of the input image.', default=32)
 parser.add_argument('--img_depth', type=int, help='Specify the depth of the input image.', default=3)
 parser.add_argument('--device', type=str, help='Specify which device to be used for the evaluation. Either "cpu" or "gpu".', default='gpu')
+parser.add_argument('--use_rnn', type=str2bool, help='Specify if a recurrent layer is needed after transformer block.', default=False)
+parser.add_argument('--rnn_type', type=str, help='Specify the recurrent layer type [lstm, gru].', default='lstm')
+parser.add_argument('--rnn_init_states', type=str, help='Specify the recurrent layer initial cell/hidden states [zeros, transformer_hxs].', default='zeros')
+
+
 
 args = parser.parse_args()
